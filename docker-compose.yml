@@ -1,0 +1,9 @@
+services:
+  hpc-demo:
+    build: .
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    # No `cpus:` / `mem_limit:` on purpose — the container must see ALL cores and
+    # RAM of the HPC host so the demo reflects the real machine. Add limits only
+    # if you deliberately want to cap the demo.
