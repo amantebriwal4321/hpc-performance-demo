@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    wait as futures_wait,
+)
 from typing import Any, Callable, Dict, List, Optional
 
 from . import workloads
@@ -52,24 +56,50 @@ def default_worker_levels() -> List[int]:
     return out
 
 
+# A cancel is a zero-arg callable returning True when the job should stop.
+CancelFn = Optional[Callable[[], bool]]
+
+
+def _stop(cancel: CancelFn) -> bool:
+    return bool(cancel and cancel())
+
+
+def _shutdown_pool(pool: ProcessPoolExecutor, stopped: bool) -> None:
+    """Tear down the process pool. On a normal finish, wait for the (already
+    complete) workers. On a cancel, terminate the worker processes immediately
+    so CPU load — and fan noise — drops at once instead of letting in-flight
+    chunks run to completion."""
+    if stopped:
+        for proc in list(getattr(pool, "_processes", {}).values()):
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        pool.shutdown(wait=False, cancel_futures=True)
+    else:
+        pool.shutdown(wait=True)
+
+
 def run_job(
     workload: str,
     params: Dict[str, Any],
     workers: int,
     progress_cb: ProgressCb = _noop,
+    cancel: CancelFn = None,
 ) -> Dict[str, Any]:
     """Execute one workload across ``workers`` processes. Returns a result dict
-    including the measured wall-time."""
+    including the measured wall-time. If ``cancel()`` starts returning True the
+    run stops scheduling new work and returns what it has, marked ``stopped``."""
     workers = max(1, min(workers, 512))
     if workload == "monte_carlo":
-        return _run_monte_carlo(params, workers, progress_cb)
+        return _run_monte_carlo(params, workers, progress_cb, cancel)
     if workload == "mandelbrot":
-        return _run_mandelbrot(params, workers, progress_cb)
+        return _run_mandelbrot(params, workers, progress_cb, cancel)
     raise ValueError(f"unknown workload: {workload}")
 
 
 def _run_monte_carlo(
-    params: Dict[str, Any], workers: int, progress_cb: ProgressCb
+    params: Dict[str, Any], workers: int, progress_cb: ProgressCb, cancel: CancelFn = None
 ) -> Dict[str, Any]:
     total_samples = int(params.get("samples", 50_000_000))
     # More chunks than workers → good load balancing, smoother progress.
@@ -79,48 +109,62 @@ def _run_monte_carlo(
     results: List[int] = []
     done_chunks = 0
     done_samples = 0
+    stopped = False
     t0 = time.perf_counter()
 
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    pool = ProcessPoolExecutor(max_workers=workers)
+    try:
         futures = {
             pool.submit(workloads.monte_carlo_chunk, n, seed): n for n, seed in tasks
         }
-        for fut in as_completed(futures):
-            hits = fut.result()
-            n = futures[fut]
-            results.append(hits)
-            done_chunks += 1
-            done_samples += n
-            elapsed = time.perf_counter() - t0
-            progress_cb(
-                {
-                    "type": "progress",
-                    "workload": "monte_carlo",
-                    "chunks_done": done_chunks,
-                    "chunks_total": len(tasks),
-                    "tasks_done": done_samples,
-                    "tasks_total": total_samples,
-                    "elapsed": elapsed,
-                    "throughput": done_samples / elapsed if elapsed > 0 else 0,
-                    "pi_running": 4.0 * sum(results) / done_samples
-                    if done_samples
-                    else 0.0,
-                }
-            )
+        pending = set(futures)
+        while pending:
+            if _stop(cancel):
+                stopped = True
+                break
+            # Poll so we can react to a cancel every ~0.25s even while every
+            # worker is mid-chunk on a huge job.
+            done, pending = futures_wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            for fut in done:
+                hits = fut.result()
+                n = futures[fut]
+                results.append(hits)
+                done_chunks += 1
+                done_samples += n
+                elapsed = time.perf_counter() - t0
+                progress_cb(
+                    {
+                        "type": "progress",
+                        "workload": "monte_carlo",
+                        "chunks_done": done_chunks,
+                        "chunks_total": len(tasks),
+                        "tasks_done": done_samples,
+                        "tasks_total": total_samples,
+                        "elapsed": elapsed,
+                        "throughput": done_samples / elapsed if elapsed > 0 else 0,
+                        "pi_running": 4.0 * sum(results) / done_samples
+                        if done_samples
+                        else 0.0,
+                    }
+                )
+    finally:
+        _shutdown_pool(pool, stopped)
 
     wall = time.perf_counter() - t0
-    reduced = workloads.monte_carlo_reduce(results, total_samples)
+    counted = done_samples if stopped else total_samples
+    reduced = workloads.monte_carlo_reduce(results, max(counted, 1))
     return {
         "workload": "monte_carlo",
         "workers": workers,
         "wall_time": wall,
-        "throughput": total_samples / wall if wall > 0 else 0,
+        "throughput": counted / wall if wall > 0 else 0,
+        "stopped": stopped,
         **reduced,
     }
 
 
 def _run_mandelbrot(
-    params: Dict[str, Any], workers: int, progress_cb: ProgressCb
+    params: Dict[str, Any], workers: int, progress_cb: ProgressCb, cancel: CancelFn = None
 ) -> Dict[str, Any]:
     width = int(params.get("width", 1000))
     height = int(params.get("height", 800))
@@ -130,53 +174,65 @@ def _run_mandelbrot(
 
     done_chunks = 0
     done_rows = 0
+    stopped = False
     t0 = time.perf_counter()
 
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    pool = ProcessPoolExecutor(max_workers=workers)
+    try:
         futures = {}
         for tag, (rs, re) in enumerate(bands):
             fut = pool.submit(
                 workloads.mandelbrot_tile, rs, re, width, height, max_iter, tag
             )
             futures[fut] = (rs, re)
-        for fut in as_completed(futures):
-            tile = fut.result()
-            rs, re = futures[fut]
-            done_chunks += 1
-            done_rows += re - rs
-            elapsed = time.perf_counter() - t0
-            # Stream the finished band so the browser can paint it live.
-            progress_cb(
-                {
-                    "type": "progress",
-                    "workload": "mandelbrot",
-                    "chunks_done": done_chunks,
-                    "chunks_total": len(bands),
-                    "tasks_done": done_rows,
-                    "tasks_total": height,
-                    "elapsed": elapsed,
-                    "throughput": (done_rows * width) / elapsed if elapsed > 0 else 0,
-                    "tile": {
-                        "row_start": tile["row_start"],
-                        "row_end": tile["row_end"],
-                        "worker_tag": tile["worker_tag"],
-                        "rows": tile["rows"],
-                    },
-                    "width": width,
-                    "height": height,
-                    "max_iter": max_iter,
-                }
-            )
+        pending = set(futures)
+        while pending:
+            if _stop(cancel):
+                stopped = True
+                break
+            done, pending = futures_wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+            for fut in done:
+                tile = fut.result()
+                rs, re = futures[fut]
+                done_chunks += 1
+                done_rows += re - rs
+                elapsed = time.perf_counter() - t0
+                # Stream the finished band so the browser can paint it live.
+                progress_cb(
+                    {
+                        "type": "progress",
+                        "workload": "mandelbrot",
+                        "chunks_done": done_chunks,
+                        "chunks_total": len(bands),
+                        "tasks_done": done_rows,
+                        "tasks_total": height,
+                        "elapsed": elapsed,
+                        "throughput": (done_rows * width) / elapsed if elapsed > 0 else 0,
+                        "tile": {
+                            "row_start": tile["row_start"],
+                            "row_end": tile["row_end"],
+                            "worker_tag": tile["worker_tag"],
+                            "rows": tile["rows"],
+                        },
+                        "width": width,
+                        "height": height,
+                        "max_iter": max_iter,
+                    }
+                )
+    finally:
+        _shutdown_pool(pool, stopped)
 
     wall = time.perf_counter() - t0
+    done_pixels = done_rows * width
     return {
         "workload": "mandelbrot",
         "workers": workers,
         "wall_time": wall,
-        "throughput": (width * height) / wall if wall > 0 else 0,
-        "pixels": width * height,
+        "throughput": done_pixels / wall if wall > 0 else 0,
+        "pixels": done_pixels if stopped else width * height,
         "width": width,
         "height": height,
+        "stopped": stopped,
     }
 
 
@@ -197,6 +253,7 @@ def run_scaling_benchmark(
     params: Dict[str, Any],
     worker_levels: Optional[List[int]] = None,
     progress_cb: ProgressCb = _noop,
+    cancel: CancelFn = None,
 ) -> Dict[str, Any]:
     """Run the same workload at each worker level; measure speedup + efficiency."""
     total = host_cpu_count()
@@ -229,6 +286,8 @@ def run_scaling_benchmark(
     baseline: Optional[float] = None
 
     for level in worker_levels:
+        if _stop(cancel):
+            break
         progress_cb(
             {
                 "type": "benchmark_level_start",
@@ -248,9 +307,13 @@ def run_scaling_benchmark(
         trials = 3 if level <= 1 else 2
         best = None
         for _ in range(trials):
-            result = run_job(workload, params, level, _noop)
+            if _stop(cancel):
+                break
+            result = run_job(workload, params, level, _noop, cancel)
             if best is None or result["wall_time"] < best["wall_time"]:
                 best = result
+        if best is None or _stop(cancel):
+            break
         result = best
         wall = result["wall_time"]
         if baseline is None:

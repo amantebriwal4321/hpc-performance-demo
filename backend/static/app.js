@@ -53,6 +53,7 @@ function configureControls() {
   $("workload").addEventListener("change", onWorkloadChange);
   $("btn-run").addEventListener("click", startRun);
   $("btn-bench").addEventListener("click", startBenchmark);
+  $("btn-stop").addEventListener("click", stopJob);
   onWorkloadChange(); // apply initial show/hide for the selected workload
 }
 
@@ -268,9 +269,17 @@ async function post(url, body) {
   if (res.status === 409) alert("A job is already running — wait for it to finish.");
 }
 
+async function stopJob() {
+  $("btn-stop").textContent = "stopping…";
+  $("btn-stop").disabled = true;
+  await fetch("/api/stop", { method: "POST" });
+}
+
 function setButtons(running) {
   $("btn-run").disabled = running;
   $("btn-bench").disabled = running;
+  $("btn-stop").disabled = !running;      // Stop is usable only while a job runs
+  $("btn-stop").textContent = "./stop";
 }
 
 // ---------------------------------------------------------------------------
