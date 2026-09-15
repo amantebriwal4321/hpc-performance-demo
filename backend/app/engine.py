@@ -205,6 +205,18 @@ def run_scaling_benchmark(
     # Clamp every level to the real host and keep the list honest.
     worker_levels = sorted({min(max(1, n), total) for n in worker_levels})
 
+    # The benchmark runs the workload once PER level (including the slow
+    # 1-worker level), so a huge Run-sized workload would make it take minutes.
+    # It measures the SCALING RATIO, not raw throughput, so cap the per-level
+    # size to something that still keeps every core busy but finishes quickly.
+    params = dict(params)
+    if workload == "monte_carlo":
+        params["samples"] = min(int(params.get("samples", 40_000_000)), 40_000_000)
+    else:
+        params["width"] = min(int(params.get("width", 1200)), 1200)
+        params["height"] = min(int(params.get("height", 900)), 900)
+        params["max_iter"] = min(int(params.get("max_iter", 500)), 500)
+
     # Warm-up: the FIRST ProcessPoolExecutor of the run pays a one-time cost
     # (spawning Python interpreters + re-importing modules, especially on
     # Windows), plus cold OS/disk caches. Left unpaid, that cost lands entirely
@@ -231,8 +243,11 @@ def run_scaling_benchmark(
         # 1-worker baseline, which would then make later levels look superlinear
         # (efficiency > 100%). The minimum is the least-contended, most
         # representative measure of the true cost.
+        # The 1-worker baseline is the reference every speedup divides by, and
+        # the most contention-sensitive, so give it an extra trial.
+        trials = 3 if level <= 1 else 2
         best = None
-        for _ in range(2):
+        for _ in range(trials):
             result = run_job(workload, params, level, _noop)
             if best is None or result["wall_time"] < best["wall_time"]:
                 best = result

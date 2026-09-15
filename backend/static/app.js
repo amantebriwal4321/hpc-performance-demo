@@ -46,7 +46,7 @@ function renderBanner() {
 function configureControls() {
   const slider = $("workers");
   slider.max = SYS.logical_cores || 8;
-  slider.value = Math.min(4, SYS.logical_cores || 4);
+  slider.value = SYS.logical_cores || 8; // default to ALL cores → Run uses the full machine
   $("worker-label").textContent = slider.value;
   slider.addEventListener("input", () => ($("worker-label").textContent = slider.value));
 
