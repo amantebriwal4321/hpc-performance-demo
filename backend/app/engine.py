@@ -180,6 +180,18 @@ def _run_mandelbrot(
     }
 
 
+def _warmup(workload: str) -> None:
+    """Run a tiny, untimed instance of the workload to absorb one-time
+    process-pool startup and cold-cache costs before the real measurements."""
+    try:
+        if workload == "mandelbrot":
+            run_job("mandelbrot", {"width": 160, "height": 120, "max_iter": 80}, 2, _noop)
+        else:
+            run_job("monte_carlo", {"samples": 400_000}, 2, _noop)
+    except Exception:
+        pass  # a warm-up failure must never break the benchmark
+
+
 def run_scaling_benchmark(
     workload: str,
     params: Dict[str, Any],
@@ -193,6 +205,14 @@ def run_scaling_benchmark(
     # Clamp every level to the real host and keep the list honest.
     worker_levels = sorted({min(max(1, n), total) for n in worker_levels})
 
+    # Warm-up: the FIRST ProcessPoolExecutor of the run pays a one-time cost
+    # (spawning Python interpreters + re-importing modules, especially on
+    # Windows), plus cold OS/disk caches. Left unpaid, that cost lands entirely
+    # on the 1-worker baseline and makes every later level look superlinear
+    # (speedup > N, efficiency > 100%). A tiny throwaway run absorbs it so every
+    # timed level starts on equal footing.
+    _warmup(workload)
+
     rows: List[Dict[str, Any]] = []
     baseline: Optional[float] = None
 
@@ -205,8 +225,18 @@ def run_scaling_benchmark(
             }
         )
         # For the benchmark we only care about wall-time per level, so swallow
-        # the fine-grained per-chunk progress from the inner run.
-        result = run_job(workload, params, level, _noop)
+        # the fine-grained per-chunk progress from the inner run. We take the
+        # BEST (min) of a couple of trials: a transient background spike (a
+        # browser, another app) can inflate a single run — worst on the
+        # 1-worker baseline, which would then make later levels look superlinear
+        # (efficiency > 100%). The minimum is the least-contended, most
+        # representative measure of the true cost.
+        best = None
+        for _ in range(2):
+            result = run_job(workload, params, level, _noop)
+            if best is None or result["wall_time"] < best["wall_time"]:
+                best = result
+        result = best
         wall = result["wall_time"]
         if baseline is None:
             baseline = wall

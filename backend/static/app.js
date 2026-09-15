@@ -30,10 +30,17 @@ async function boot() {
 function renderBanner() {
   const phys = SYS.physical_cores || "?";
   const log = SYS.logical_cores || "?";
-  $("machine-banner").innerHTML =
-    `<strong>${SYS.cpu_model || "CPU"}</strong><br>` +
-    `${phys} cores / ${log} threads · ${SYS.mem_total_gb || "?"} GB RAM · ${SYS.hostname || ""}`;
-  $("core-sub").textContent = `${log} logical cores`;
+  const rows = [
+    ["host", SYS.hostname || "unknown"],
+    ["os", SYS.platform || "-"],
+    ["cpu", SYS.cpu_model || "CPU"],
+    ["cores", `${phys} physical / ${log} logical`],
+    ["memory", `${SYS.mem_total_gb || "?"} GB`],
+  ];
+  $("machine-banner").innerHTML = rows
+    .map(([k, v]) => `<div class="nf"><span class="nf-k">${k.padEnd(7)}</span>${v}</div>`)
+    .join("");
+  $("core-sub").textContent = `${log} cores`;
 }
 
 function configureControls() {
@@ -55,38 +62,37 @@ function onWorkloadChange() {
   document.querySelectorAll(".mandel-only").forEach((el) => (el.hidden = w !== "mandelbrot"));
   $("pi-output").hidden = w !== "monte_carlo";
   $("mandel-canvas").hidden = w !== "mandelbrot";
-  $("output-title").textContent = w === "monte_carlo" ? "π estimate" : "Mandelbrot render";
+  $("output-title").textContent = w === "monte_carlo" ? "monte_carlo :: pi" : "mandelbrot :: image";
 }
 
 // ---------------------------------------------------------------------------
 // CPU grid
 // ---------------------------------------------------------------------------
+const BLOCKS = 16; // width of each CLI utilisation bar, in block characters
+
 function buildCpuGrid(n) {
   const grid = $("cpu-grid");
   grid.innerHTML = "";
   coreCells = [];
-  const cols = n > 36 ? 12 : n > 16 ? 8 : Math.min(n, 8);
-  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  const empty = "░".repeat(BLOCKS);
   for (let i = 0; i < n; i++) {
-    const cell = document.createElement("div");
-    cell.className = "core";
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    const lbl = document.createElement("div");
-    lbl.className = "lbl";
-    lbl.textContent = i;
-    cell.appendChild(bar);
-    cell.appendChild(lbl);
-    grid.appendChild(cell);
-    coreCells.push(bar);
+    const row = document.createElement("div");
+    row.className = "core";
+    const id = String(i).padStart(2, "0");
+    row.innerHTML =
+      `<span class="c-id">cpu${id}</span>` +
+      `<span class="c-bar">${empty}</span>` +
+      `<span class="c-pct">  0%</span>`;
+    grid.appendChild(row);
+    coreCells.push({ bar: row.querySelector(".c-bar"), pct: row.querySelector(".c-pct") });
   }
 }
 
 function heat(pct) {
   // green → amber → red as utilisation climbs.
-  if (pct < 50) return "#22c55e";
-  if (pct < 85) return "#f59e0b";
-  return "#ef4444";
+  if (pct < 50) return "#3fb950";
+  if (pct < 85) return "#d29922";
+  return "#f85149";
 }
 
 // ---------------------------------------------------------------------------
@@ -95,9 +101,10 @@ function heat(pct) {
 function connectWs() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => $("conn-dot").classList.add("on");
+  ws.onopen = () => { $("conn-dot").classList.add("on"); $("conn-text").textContent = "online"; };
   ws.onclose = () => {
     $("conn-dot").classList.remove("on");
+    $("conn-text").textContent = "offline";
     setTimeout(connectWs, 1500); // auto-reconnect
   };
   ws.onmessage = (ev) => handleFrame(JSON.parse(ev.data));
@@ -124,8 +131,11 @@ function onMetrics(f) {
   const per = f.per_cpu || [];
   for (let i = 0; i < coreCells.length && i < per.length; i++) {
     const pct = per[i];
-    coreCells[i].style.height = pct + "%";
-    coreCells[i].style.background = heat(pct);
+    const filled = Math.round((pct / 100) * BLOCKS);
+    const cell = coreCells[i];
+    cell.bar.textContent = "█".repeat(filled) + "░".repeat(BLOCKS - filled);
+    cell.bar.style.color = heat(pct);
+    cell.pct.textContent = (pct.toFixed(0) + "%").padStart(4, " ");
   }
   $("s-cpu").textContent = (f.cpu_overall || 0).toFixed(0) + "%";
   $("s-ram").textContent = `${f.mem_used_gb} / ${f.mem_total_gb} GB`;
@@ -136,7 +146,7 @@ function onJobStart(f) {
   if (f.mode === "run") {
     $("s-workers").textContent = f.workers;
     if (f.workload === "monte_carlo") {
-      $("pi-value").textContent = "π = …";
+      $("pi-value").textContent = "pi = …";
       $("pi-error").textContent = "";
       $("pi-bar").style.width = "0%";
     } else {
@@ -157,7 +167,7 @@ function onProgress(f) {
   $("s-elapsed").textContent = f.elapsed.toFixed(2) + "s";
 
   if (f.workload === "monte_carlo") {
-    $("pi-value").textContent = "π = " + f.pi_running.toFixed(6);
+    $("pi-value").textContent = "pi = " + f.pi_running.toFixed(6);
     $("pi-bar").style.width = pct + "%";
   } else if (f.tile) {
     paintTile(f.tile, f.width, f.height, f.max_iter);
@@ -166,7 +176,7 @@ function onProgress(f) {
 
 function onResult(f) {
   if (f.workload === "monte_carlo") {
-    $("pi-value").textContent = "π = " + f.pi_estimate.toFixed(6);
+    $("pi-value").textContent = "pi = " + f.pi_estimate.toFixed(6);
     $("pi-error").textContent =
       `error ${f.error.toExponential(2)} · ${fmt(f.total_samples)} samples · ` +
       `${f.wall_time.toFixed(2)}s · ${fmtInt(f.throughput)} samples/s`;
@@ -268,25 +278,25 @@ function setButtons(running) {
 // ---------------------------------------------------------------------------
 let timeChart, speedupChart;
 function initCharts() {
-  const gridColor = "#223047", tick = "#90a1b8";
+  const gridColor = "#1b2530", tick = "#7d8590", fontFamily = "ui-monospace, monospace";
   const base = {
     responsive: true,
-    plugins: { legend: { labels: { color: "#e6edf6" } } },
+    plugins: { legend: { labels: { color: "#c9d1d9", font: { family: fontFamily } } } },
     scales: {
-      x: { grid: { color: gridColor }, ticks: { color: tick }, title: { display: true, text: "workers", color: tick } },
-      y: { grid: { color: gridColor }, ticks: { color: tick }, beginAtZero: true },
+      x: { grid: { color: gridColor }, ticks: { color: tick, font: { family: fontFamily } }, title: { display: true, text: "workers", color: tick, font: { family: fontFamily } } },
+      y: { grid: { color: gridColor }, ticks: { color: tick, font: { family: fontFamily } }, beginAtZero: true },
     },
   };
   timeChart = new Chart($("time-chart"), {
     type: "bar",
-    data: { labels: [], datasets: [{ label: "wall time (s)", data: [], backgroundColor: "#3ba0ff" }] },
+    data: { labels: [], datasets: [{ label: "wall time (s)", data: [], backgroundColor: "#3fb950" }] },
     options: JSON.parse(JSON.stringify(base)),
   });
   speedupChart = new Chart($("speedup-chart"), {
     type: "line",
     data: { labels: [], datasets: [
-      { label: "measured speedup", data: [], borderColor: "#22c55e", backgroundColor: "#22c55e", tension: .2 },
-      { label: "ideal (linear)", data: [], borderColor: "#ffb020", borderDash: [6, 5], pointRadius: 0 },
+      { label: "measured speedup", data: [], borderColor: "#3fb950", backgroundColor: "#3fb950", tension: .2 },
+      { label: "ideal (linear)", data: [], borderColor: "#d29922", borderDash: [6, 5], pointRadius: 0 },
     ] },
     options: JSON.parse(JSON.stringify(base)),
   });

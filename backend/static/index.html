@@ -3,109 +3,121 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HPC Performance Demonstrator</title>
+  <title>hpc-demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="dot" id="conn-dot"></span>
-      <h1>HPC Performance Demonstrator</h1>
+  <div class="term">
+    <!-- Terminal title bar -->
+    <div class="term-bar">
+      <span class="tb-dots"><i class="d-r"></i><i class="d-y"></i><i class="d-g"></i></span>
+      <span class="tb-title">hpc-demo — parallel workload monitor</span>
+      <span class="tb-conn"><span class="dot" id="conn-dot"></span><span id="conn-text">connecting…</span></span>
     </div>
-    <div class="machine" id="machine-banner">querying host…</div>
-  </header>
 
-  <main>
-    <!-- Controls -->
-    <section class="panel controls">
-      <div class="ctrl">
-        <label>Workload</label>
-        <select id="workload">
-          <option value="monte_carlo">Monte Carlo &pi;</option>
-          <option value="mandelbrot">Mandelbrot render</option>
-        </select>
-      </div>
-
-      <div class="ctrl mc-only">
-        <label>Samples</label>
-        <select id="samples">
-          <option value="10000000">10 M</option>
-          <option value="50000000" selected>50 M</option>
-          <option value="100000000">100 M</option>
-          <option value="250000000">250 M</option>
-          <option value="500000000">500 M</option>
-        </select>
-      </div>
-
-      <div class="ctrl mandel-only" hidden>
-        <label>Image / iterations</label>
-        <select id="mandel-size">
-          <option value="800x600x400">800×600 · 400 it</option>
-          <option value="1200x900x600" selected>1200×900 · 600 it</option>
-          <option value="1600x1200x800">1600×1200 · 800 it</option>
-          <option value="2000x1500x1200">2000×1500 · 1200 it</option>
-        </select>
-      </div>
-
-      <div class="ctrl">
-        <label>Workers: <strong id="worker-label">4</strong></label>
-        <input type="range" id="workers" min="1" max="8" value="4" />
-      </div>
-
-      <div class="ctrl actions">
-        <button id="btn-run" class="primary">▶ Run</button>
-        <button id="btn-bench" class="accent">📊 Scaling Benchmark</button>
-      </div>
-    </section>
-
-    <!-- Live stat counters -->
-    <section class="stats">
-      <div class="stat"><span class="k">CPU total</span><span class="v" id="s-cpu">—</span></div>
-      <div class="stat"><span class="k">Workers active</span><span class="v" id="s-workers">—</span></div>
-      <div class="stat"><span class="k">RAM used</span><span class="v" id="s-ram">—</span></div>
-      <div class="stat"><span class="k">Progress</span><span class="v" id="s-progress">—</span></div>
-      <div class="stat"><span class="k">Throughput</span><span class="v" id="s-tput">—</span></div>
-      <div class="stat"><span class="k">Elapsed</span><span class="v" id="s-elapsed">—</span></div>
-    </section>
-
-    <div class="grid-2">
-      <!-- Live CPU grid -->
-      <section class="panel">
-        <h2>Per-core utilisation <span class="sub" id="core-sub"></span></h2>
-        <div id="cpu-grid" class="cpu-grid"></div>
+    <div class="term-body">
+      <!-- neofetch-style host block -->
+      <section class="block">
+        <div class="prompt"><span class="usr">hpc</span><span class="at">@</span><span class="host">demo</span>:<span class="path">~</span>$ <span class="cmd">hostinfo</span></div>
+        <div class="host-block" id="machine-banner">querying host…</div>
       </section>
 
-      <!-- Workload output -->
-      <section class="panel">
-        <h2 id="output-title">Result</h2>
-        <div id="pi-output" class="pi-output">
-          <div class="pi-big" id="pi-value">π = —</div>
-          <div class="pi-sub" id="pi-error"></div>
-          <div class="progressbar"><div class="fill" id="pi-bar"></div></div>
+      <!-- Command / controls -->
+      <section class="block">
+        <div class="prompt"><span class="usr">hpc</span><span class="at">@</span><span class="host">demo</span>:<span class="path">~</span>$ <span class="cmd">./bench</span> <span class="flag">--configure</span></div>
+        <div class="controls">
+          <label class="field">
+            <span class="lbl">workload</span>
+            <select id="workload">
+              <option value="monte_carlo">monte_carlo (pi)</option>
+              <option value="mandelbrot">mandelbrot (image)</option>
+            </select>
+          </label>
+
+          <label class="field mc-only">
+            <span class="lbl">--samples</span>
+            <select id="samples">
+              <option value="10000000">10M</option>
+              <option value="50000000" selected>50M</option>
+              <option value="100000000">100M</option>
+              <option value="250000000">250M</option>
+              <option value="500000000">500M</option>
+            </select>
+          </label>
+
+          <label class="field mandel-only" hidden>
+            <span class="lbl">--image</span>
+            <select id="mandel-size">
+              <option value="800x600x400">800x600 / 400it</option>
+              <option value="1200x900x600" selected>1200x900 / 600it</option>
+              <option value="1600x1200x800">1600x1200 / 800it</option>
+              <option value="2000x1500x1200">2000x1500 / 1200it</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span class="lbl">--workers <b id="worker-label">4</b></span>
+            <input type="range" id="workers" min="1" max="8" value="4" />
+          </label>
+
+          <div class="btns">
+            <button id="btn-run" class="btn run">./run</button>
+            <button id="btn-bench" class="btn bench">./benchmark</button>
+          </div>
         </div>
-        <canvas id="mandel-canvas" width="600" height="450" hidden></canvas>
       </section>
-    </div>
 
-    <!-- Scaling benchmark -->
-    <section class="panel">
-      <h2>Scaling benchmark <span class="sub">same workload, more cores — measured wall-time &amp; speedup</span></h2>
-      <div class="grid-2">
-        <div><canvas id="time-chart"></canvas></div>
-        <div><canvas id="speedup-chart"></canvas></div>
+      <!-- Live stats readout -->
+      <section class="block">
+        <div class="readout">
+          <span class="ro"><span class="k">cpu</span><span class="v" id="s-cpu">--</span></span>
+          <span class="ro"><span class="k">workers</span><span class="v" id="s-workers">--</span></span>
+          <span class="ro"><span class="k">ram</span><span class="v" id="s-ram">--</span></span>
+          <span class="ro"><span class="k">progress</span><span class="v" id="s-progress">--</span></span>
+          <span class="ro"><span class="k">throughput</span><span class="v" id="s-tput">--</span></span>
+          <span class="ro"><span class="k">elapsed</span><span class="v" id="s-elapsed">--</span></span>
+        </div>
+      </section>
+
+      <div class="split">
+        <!-- CPU grid -->
+        <section class="block">
+          <div class="block-h">// per-core utilisation <span class="sub" id="core-sub"></span></div>
+          <div id="cpu-grid" class="cpu-grid"></div>
+        </section>
+
+        <!-- Workload output -->
+        <section class="block">
+          <div class="block-h">// output <span class="sub" id="output-title"></span></div>
+          <div id="pi-output" class="pi-output">
+            <div class="pi-big" id="pi-value">pi = --</div>
+            <div class="pi-sub" id="pi-error"></div>
+            <div class="progressbar"><div class="fill" id="pi-bar"></div></div>
+          </div>
+          <canvas id="mandel-canvas" width="600" height="450" hidden></canvas>
+        </section>
       </div>
-      <table class="bench-table" id="bench-table" hidden>
-        <thead><tr><th>Workers</th><th>Wall time (s)</th><th>Speedup</th><th>Efficiency</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </section>
-  </main>
 
-  <footer>
-    All numbers measured live on the host running this server — CPU/RAM via psutil,
-    timings via perf_counter. Nothing is simulated.
-  </footer>
+      <!-- Scaling benchmark -->
+      <section class="block">
+        <div class="block-h">// scaling benchmark <span class="sub">same workload, more cores &mdash; measured wall-time &amp; speedup</span></div>
+        <div class="split">
+          <div class="chartbox"><canvas id="time-chart"></canvas></div>
+          <div class="chartbox"><canvas id="speedup-chart"></canvas></div>
+        </div>
+        <table class="bench-table" id="bench-table" hidden>
+          <thead><tr><th>workers</th><th>wall_s</th><th>speedup</th><th>efficiency</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <div class="foot">// all metrics measured live on the host (psutil + perf_counter). nothing is simulated.</div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>
